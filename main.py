@@ -101,7 +101,7 @@ def _extract_snapshot(html: str) -> LiveSnapshot:
     "astrbot_plugin_acfun_live_monitor",
     "bpking",
     "Minimal AcFun live room monitor",
-    "0.2.1",
+    "0.3.0",
 )
 class AcFunLiveMonitor(Star):
     def __init__(self, context: Context, config: AstrBotConfig) -> None:
@@ -112,6 +112,7 @@ class AcFunLiveMonitor(Star):
         self._initialized = False
         self._was_live = False
         self._last_live_id = ""
+        self._last_live_snapshot: LiveSnapshot | None = None
         self._room_url = ""
         self._last_config_error = ""
 
@@ -142,6 +143,7 @@ class AcFunLiveMonitor(Star):
                 self._initialized = False
                 self._was_live = False
                 self._last_live_id = ""
+                self._last_live_snapshot = None
 
             try:
                 snapshot = await self._fetch_snapshot(config.room_url)
@@ -180,27 +182,54 @@ class AcFunLiveMonitor(Star):
     async def _handle_snapshot(
         self, config: MonitorConfig, snapshot: LiveSnapshot
     ) -> None:
-        should_notify = (
+        should_notify_live = (
             self._initialized
             and snapshot.is_live
             and (not self._was_live or snapshot.live_id != self._last_live_id)
         )
+        should_notify_offline = (
+            self._initialized and self._was_live and not snapshot.is_live
+        )
+        last_live_snapshot = self._last_live_snapshot
 
         self._was_live = snapshot.is_live
         self._last_live_id = snapshot.live_id if snapshot.is_live else ""
+        if snapshot.is_live:
+            self._last_live_snapshot = snapshot
         self._initialized = True
 
-        if not should_notify:
+        if should_notify_live:
+            name = snapshot.streamer_name or "AcFun 主播"
+            title = snapshot.title or "未提供标题"
+            text = f"🟢 {name} 开播了！\n{title}\n{config.room_url}"
+            sent = await self._send_notification(
+                config.push_target, text, snapshot.cover_url
+            )
+            if sent is False:
+                logger.warning(f"AcFun live monitor could not send to {config.push_target}")
+            else:
+                logger.info(f"AcFun live notification sent: {name}")
             return
 
-        name = snapshot.streamer_name or "AcFun 主播"
-        title = snapshot.title or "未提供标题"
-        text = f"🟢 {name} 开播了！\n{title}\n{config.room_url}"
-        sent = await self._send_notification(config.push_target, text, snapshot.cover_url)
+        if not should_notify_offline:
+            return
+
+        name = (
+            last_live_snapshot.streamer_name
+            if last_live_snapshot is not None
+            else "AcFun 主播"
+        ) or "AcFun 主播"
+        title = (
+            last_live_snapshot.title
+            if last_live_snapshot is not None
+            else "未提供标题"
+        ) or "未提供标题"
+        text = f"🔴 {name} 下播了。\n{title}\n{config.room_url}"
+        sent = await self._send_notification(config.push_target, text, "")
         if sent is False:
             logger.warning(f"AcFun live monitor could not send to {config.push_target}")
         else:
-            logger.info(f"AcFun live notification sent: {name}")
+            logger.info(f"AcFun live end notification sent: {name}")
 
     async def _send_notification(
         self, push_target: str, text: str, cover_url: str
