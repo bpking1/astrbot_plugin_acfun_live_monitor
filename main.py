@@ -15,6 +15,9 @@ from astrbot.api.star import Context, Star, register
 
 _ROOM_PATH_RE = re.compile(r"^/live/(\d+)/?$")
 _INITIAL_STATE_MARKER_RE = re.compile(r"window\.__INITIAL_STATE__\s*=\s*")
+_LIVE_COVER_URL_TEMPLATE = (
+    "https://ali-live.static.yximgs.com/bs2/ztlc/cover_{live_id}_raw.jpg"
+)
 _POLL_INTERVAL_SECONDS = 60
 _HEADERS = {
     "User-Agent": (
@@ -85,19 +88,12 @@ def _extract_snapshot(html: str) -> LiveSnapshot:
     user = info.get("user")
     streamer_name = user.get("name", "") if isinstance(user, dict) else ""
     title = info.get("title", "")
-    cover_urls = info.get("coverUrls")
-    cover_url = ""
-    if isinstance(cover_urls, list):
-        for value in cover_urls:
-            if isinstance(value, str) and value.startswith(("https://", "http://")):
-                cover_url = value
-                break
     return LiveSnapshot(
         is_live=True,
         live_id=live_id,
         streamer_name=str(streamer_name),
         title=str(title),
-        cover_url=cover_url,
+        cover_url=_LIVE_COVER_URL_TEMPLATE.format(live_id=live_id),
     )
 
 
@@ -105,7 +101,7 @@ def _extract_snapshot(html: str) -> LiveSnapshot:
     "astrbot_plugin_acfun_live_monitor",
     "bpking",
     "Minimal AcFun live room monitor",
-    "0.2.0",
+    "0.2.1",
 )
 class AcFunLiveMonitor(Star):
     def __init__(self, context: Context, config: AstrBotConfig) -> None:
