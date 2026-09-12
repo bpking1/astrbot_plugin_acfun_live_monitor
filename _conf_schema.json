@@ -1,0 +1,14 @@
+{
+  "room_url": {
+    "description": "AcFun 直播间地址",
+    "hint": "填写完整地址，例如 https://live.acfun.cn/live/52002191",
+    "type": "string",
+    "default": ""
+  },
+  "push_target": {
+    "description": "推送目标（UMO）",
+    "hint": "在目标群聊或私聊发送 /sid，复制返回的 UMO 字段",
+    "type": "string",
+    "default": ""
+  }
+}

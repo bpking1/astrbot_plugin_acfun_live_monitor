@@ -4,18 +4,15 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from urllib.parse import urlparse
 
 import aiohttp
 import astrbot.api.message_components as Comp
-from astrbot.api import logger
+from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import MessageChain
 from astrbot.api.star import Context, Star, register
 
 
-_PLUGIN_DIR = Path(__file__).resolve().parent
-_CONFIG_PATH = _PLUGIN_DIR / "config.json"
 _ROOM_PATH_RE = re.compile(r"^/live/(\d+)/?$")
 _INITIAL_STATE_MARKER_RE = re.compile(r"window\.__INITIAL_STATE__\s*=\s*")
 _POLL_INTERVAL_SECONDS = 60
@@ -58,17 +55,7 @@ def _normalize_room_url(value: str) -> str:
     return f"https://live.acfun.cn/live/{match.group(1)}"
 
 
-def _read_config() -> MonitorConfig:
-    try:
-        raw = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
-    except FileNotFoundError as e:
-        raise ValueError(f"找不到配置文件：{_CONFIG_PATH}") from e
-    except json.JSONDecodeError as e:
-        raise ValueError(f"config.json 不是有效 JSON：{e.msg}") from e
-
-    if not isinstance(raw, dict):
-        raise ValueError("config.json 的根节点必须是对象")
-
+def _read_config(raw: AstrBotConfig) -> MonitorConfig:
     room_url = _normalize_room_url(str(raw.get("room_url", "")))
     push_target = str(raw.get("push_target", "")).strip()
     if not push_target:
@@ -116,13 +103,14 @@ def _extract_snapshot(html: str) -> LiveSnapshot:
 
 @register(
     "astrbot_plugin_acfun_live_monitor",
-    "local",
+    "bpking",
     "Minimal AcFun live room monitor",
-    "0.1.0",
+    "0.2.0",
 )
 class AcFunLiveMonitor(Star):
-    def __init__(self, context: Context) -> None:
+    def __init__(self, context: Context, config: AstrBotConfig) -> None:
         super().__init__(context)
+        self.config = config
         self._session: aiohttp.ClientSession | None = None
         self._task: asyncio.Task | None = None
         self._initialized = False
@@ -136,7 +124,7 @@ class AcFunLiveMonitor(Star):
             return
         self._session = aiohttp.ClientSession(headers=_HEADERS)
         self._task = asyncio.create_task(self._poll_loop())
-        logger.info("AcFun live monitor started; edit config.json to configure it")
+        logger.info("AcFun live monitor started; configure it in the AstrBot WebUI")
 
     async def terminate(self) -> None:
         if self._task is not None:
@@ -171,7 +159,7 @@ class AcFunLiveMonitor(Star):
 
     def _load_config(self) -> MonitorConfig | None:
         try:
-            config = _read_config()
+            config = _read_config(self.config)
         except ValueError as e:
             message = str(e)
             if message != self._last_config_error:
