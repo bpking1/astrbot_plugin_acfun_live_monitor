@@ -173,7 +173,7 @@ class AcFunLiveMonitor(Star):
         self._session = aiohttp.ClientSession(headers=_HEADERS)
         self._task = asyncio.create_task(self._poll_loop())
         self._tracker_task = asyncio.create_task(self._tracker_poll_loop())
-        logger.info("AcFun live monitor started; configure it in the AstrBot WebUI")
+        logger.info("AcFun / Tracker live monitor started; polling interval: 60 seconds")
 
     async def terminate(self) -> None:
         if self._tracker_task is not None:
@@ -288,6 +288,7 @@ class AcFunLiveMonitor(Star):
             logger.info(f"AcFun live end notification sent: {name}")
 
     async def _tracker_poll_loop(self) -> None:
+        disabled_logged = False
         while True:
             try:
                 config = _read_tracker_config(self.config)
@@ -299,16 +300,30 @@ class AcFunLiveMonitor(Star):
                     self._tracker_config_error = message
                 config = None
             if config is None:
+                if not disabled_logged and not self._tracker_config_error:
+                    logger.info("Tracker monitor 未启用：请在插件设置中开启 tracker_enabled")
+                    disabled_logged = True
                 self._tracker_identity = None
                 self._tracker_previous = None
                 await asyncio.sleep(30)
                 continue
+            disabled_logged = False
             identity = (config.api_url, config.media_id, config.media_name, config.push_target, config.watch_url)
             if identity != self._tracker_identity:
                 self._tracker_identity = identity
                 self._tracker_previous = None
+                logger.info(f"Tracker monitor 已启用：{config.media_name}，媒体 ID：{config.media_id or '按名称查找'}，每次检查后等待 {_POLL_INTERVAL_SECONDS} 秒")
             try:
                 snapshot = await self._fetch_tracker_snapshot(config)
+                status = "正在直播" if snapshot.is_live else "未开播"
+                previous = self._tracker_previous
+                if previous is None:
+                    action = "首次检测，仅记录状态，不补发通知"
+                elif previous.is_live == snapshot.is_live and previous.live_id == snapshot.live_id:
+                    action = "状态未变化，不重复通知"
+                else:
+                    action = "检测到状态或场次变化，准备通知"
+                logger.info(f"Tracker monitor 检查成功：{config.media_name}，{status}；{action}")
                 await self._handle_tracker_snapshot(config, snapshot)
             except asyncio.CancelledError:
                 raise
