@@ -43,6 +43,53 @@ class LiveSnapshot:
     cover_url: str = ""
 
 
+
+@dataclass(frozen=True)
+class TrackerConfig:
+    api_url: str
+    watch_url: str
+    media_name: str
+    media_id: str
+    push_target: str
+
+
+def _http_url(value: str, field: str) -> str:
+    parsed = urlparse(value.strip())
+    if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError(f"{field} 必须是完整的 HTTP(S) 地址")
+    return value.strip()
+
+
+def _read_tracker_config(raw: AstrBotConfig) -> TrackerConfig | None:
+    if not raw.get("tracker_enabled", False):
+        return None
+    api_url = _http_url(str(raw.get("tracker_api_url", "")), "tracker_api_url").rstrip("/")
+    parsed = urlparse(api_url)
+    if parsed.query or parsed.fragment:
+        raise ValueError("tracker_api_url 填 Tracker 服务地址，不包含 #synctv 或查询参数")
+    watch_url = _http_url(str(raw.get("tracker_watch_url", "")), "tracker_watch_url")
+    name = str(raw.get("tracker_media_name", "木柱的直播")).strip()
+    media_id = str(raw.get("tracker_media_id", "")).strip()
+    if media_id and re.fullmatch(r"med_[A-Za-z0-9]{1,60}", media_id) is None:
+        raise ValueError("tracker_media_id 必须是 med_ 开头的媒体 ID")
+    if not name:
+        raise ValueError("tracker_media_name 不能为空")
+    target = str(raw.get("push_target", "")).strip()
+    if not target:
+        raise ValueError("push_target 不能为空")
+    return TrackerConfig(api_url, watch_url, name, media_id, target)
+
+
+def _tracker_snapshot(data: dict, config: TrackerConfig, media_id: str) -> LiveSnapshot:
+    if data.get("mediaId") != media_id or not isinstance(data.get("active"), bool):
+        raise ValueError("Tracker 返回了无效的直播状态")
+    active = data["active"]
+    started = str(data.get("startedAt", ""))
+    if active and (not started.isdecimal() or int(started) <= 0):
+        raise ValueError("Tracker 返回了无效的开播时间")
+    return LiveSnapshot(active, f"{media_id}:{started}" if active else "", config.media_name, config.media_name)
+
+
 def _normalize_room_url(value: str) -> str:
     url = value.strip()
     if "://" not in url:
@@ -100,8 +147,8 @@ def _extract_snapshot(html: str) -> LiveSnapshot:
 @register(
     "astrbot_plugin_acfun_live_monitor",
     "bpking",
-    "Minimal AcFun live room monitor",
-    "0.3.0",
+    "AcFun and Tracker live room monitor",
+    "0.4.0",
 )
 class AcFunLiveMonitor(Star):
     def __init__(self, context: Context, config: AstrBotConfig) -> None:
@@ -109,6 +156,10 @@ class AcFunLiveMonitor(Star):
         self.config = config
         self._session: aiohttp.ClientSession | None = None
         self._task: asyncio.Task | None = None
+        self._tracker_task: asyncio.Task | None = None
+        self._tracker_previous: LiveSnapshot | None = None
+        self._tracker_identity: tuple | None = None
+        self._tracker_config_error = ""
         self._initialized = False
         self._was_live = False
         self._last_live_id = ""
@@ -121,9 +172,14 @@ class AcFunLiveMonitor(Star):
             return
         self._session = aiohttp.ClientSession(headers=_HEADERS)
         self._task = asyncio.create_task(self._poll_loop())
+        self._tracker_task = asyncio.create_task(self._tracker_poll_loop())
         logger.info("AcFun live monitor started; configure it in the AstrBot WebUI")
 
     async def terminate(self) -> None:
+        if self._tracker_task is not None:
+            self._tracker_task.cancel()
+            await asyncio.gather(self._tracker_task, return_exceptions=True)
+            self._tracker_task = None
         if self._task is not None:
             self._task.cancel()
             await asyncio.gather(self._task, return_exceptions=True)
@@ -230,6 +286,94 @@ class AcFunLiveMonitor(Star):
             logger.warning(f"AcFun live monitor could not send to {config.push_target}")
         else:
             logger.info(f"AcFun live end notification sent: {name}")
+
+    async def _tracker_poll_loop(self) -> None:
+        while True:
+            try:
+                config = _read_tracker_config(self.config)
+                self._tracker_config_error = ""
+            except ValueError as error:
+                message = str(error)
+                if message != self._tracker_config_error:
+                    logger.warning(f"Tracker monitor config error: {message}")
+                    self._tracker_config_error = message
+                config = None
+            if config is None:
+                self._tracker_identity = None
+                self._tracker_previous = None
+                await asyncio.sleep(30)
+                continue
+            identity = (config.api_url, config.media_id, config.media_name, config.push_target, config.watch_url)
+            if identity != self._tracker_identity:
+                self._tracker_identity = identity
+                self._tracker_previous = None
+            try:
+                snapshot = await self._fetch_tracker_snapshot(config)
+                await self._handle_tracker_snapshot(config, snapshot)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                # Network/permission/lookup failures must never become offline events.
+                logger.warning(f"Tracker monitor check failed: {error}")
+            await asyncio.sleep(_POLL_INTERVAL_SECONDS)
+
+    async def _tracker_get(self, config: TrackerConfig, path: str, params: dict) -> dict:
+        if self._session is None:
+            raise RuntimeError("HTTP session is not initialized")
+        async with self._session.get(
+            config.api_url + "/api/synctv/" + path, params=params,
+            timeout=aiohttp.ClientTimeout(total=15),
+        ) as response:
+            response.raise_for_status()
+            data = await response.json()
+        if not isinstance(data, dict) or "error" in data:
+            raise ValueError("Tracker 接口未返回有效数据")
+        return data
+
+    async def _fetch_tracker_snapshot(self, config: TrackerConfig) -> LiveSnapshot:
+        media_id = config.media_id
+        if not media_id:
+            matches = {}
+            for page in range(1, 101):
+                data = await self._tracker_get(config, "playlist", {"page": page, "pageSize": 50})
+                if not any(key in data for key in ("media", "playlists", "total", "fileCount", "playlistCount", "page")):
+                    raise ValueError("Tracker 片单响应不完整")
+                items = data.get("media", [])
+                folders = data.get("playlists", [])
+                if not isinstance(items, list) or not isinstance(folders, list):
+                    raise ValueError("Tracker 片单响应格式错误")
+                for item in items:
+                    if item.get("name") == config.media_name:
+                        if item.get("sourceProvider") not in (5, "5", "SOURCE_PROVIDER_RTMP"):
+                            raise ValueError("指定条目不是 SyncTV 自建推流直播")
+                        candidate = item.get("id")
+                        if not isinstance(candidate, str) or not re.fullmatch(r"med_[A-Za-z0-9]{1,60}", candidate):
+                            raise ValueError("Tracker 片单媒体 ID 无效")
+                        matches[candidate] = item
+                count = len(items) + len(folders)
+                if count < 50:
+                    break
+            else:
+                raise ValueError("片单过大，请直接配置 tracker_media_id")
+            if len(matches) != 1:
+                raise ValueError("根片单中没有唯一匹配的直播，请检查名称或配置 tracker_media_id")
+            media_id = next(iter(matches))
+        data = await self._tracker_get(config, "live-status", {"mediaId": media_id})
+        return _tracker_snapshot(data, config, media_id)
+
+    async def _handle_tracker_snapshot(self, config: TrackerConfig, snapshot: LiveSnapshot) -> None:
+        previous = self._tracker_previous
+        if previous is not None:
+            opened = snapshot.is_live and (not previous.is_live or snapshot.live_id != previous.live_id)
+            closed = previous.is_live and not snapshot.is_live
+            if opened or closed:
+                text = (f"🟢 {config.media_name} 开播了！" if opened else f"🔴 {config.media_name} 下播了。") + f"\n{config.watch_url}"
+                # Commit only after delivery succeeds so transient send failures retry.
+                sent = await self._send_notification(config.push_target, text, "")
+                if sent is False:
+                    raise RuntimeError("Tracker 直播通知发送失败，下次检查将重试")
+                logger.info(f"Tracker live notification sent: {config.media_name}")
+        self._tracker_previous = snapshot
 
     async def _send_notification(
         self, push_target: str, text: str, cover_url: str

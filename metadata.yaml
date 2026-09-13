@@ -1,7 +1,7 @@
 name: astrbot_plugin_acfun_live_monitor
-display_name: AcFun 直播监控
-short_desc: 监控一个 AcFun 直播间并推送开播、下播通知。
-desc: 通过 AstrBot 设置面板监控一个 AcFun 直播间并推送开播、下播通知。
-version: 0.3.0
+display_name: AcFun / Tracker 直播监控
+short_desc: 监控 AcFun 和 Tracker 自建直播，共用会话推送开播、下播通知。
+desc: 通过 AstrBot 设置面板监控 AcFun 和 Tracker 自建直播，共用会话推送开播、下播通知。
+version: 0.4.0
 author: bpking
 repo: https://github.com/bpking1/astrbot_plugin_acfun_live_monitor

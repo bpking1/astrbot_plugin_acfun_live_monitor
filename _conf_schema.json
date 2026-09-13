@@ -10,5 +10,33 @@
     "hint": "在目标群聊或私聊发送 /sid，复制返回的 UMO 字段",
     "type": "string",
     "default": ""
+  },
+  "tracker_enabled": {
+    "description": "启用 Tracker 直播监控",
+    "type": "bool",
+    "default": false
+  },
+  "tracker_api_url": {
+    "description": "Tracker API 服务地址",
+    "hint": "填写 Tracker 地址，不是 SyncTV 地址；可用 AstrBot 能访问的内网地址，不带 #synctv",
+    "type": "string",
+    "default": "http://v.738888.xyz"
+  },
+  "tracker_watch_url": {
+    "description": "通知中的 Tracker 观看链接",
+    "type": "string",
+    "default": "http://v.738888.xyz/#synctv"
+  },
+  "tracker_media_name": {
+    "description": "Tracker 根片单中的直播名称",
+    "hint": "精确匹配，默认监控木柱的直播",
+    "type": "string",
+    "default": "木柱的直播"
+  },
+  "tracker_media_id": {
+    "description": "SyncTV 媒体 ID（可选）",
+    "hint": "留空按根片单名称查找；重名或在子片单时可直接填写 ID，例如 med_3",
+    "type": "string",
+    "default": ""
   }
 }
